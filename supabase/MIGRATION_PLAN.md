@@ -1,5 +1,7 @@
 # AI WorkMate Supabase Migration Plan
 
+This is the concise migration index. The full architecture, data-flow, RLS, storage, and validation plan lives in [`migration-plan.md`](./migration-plan.md).
+
 ## Current Local Architecture
 
 - Auth logic: `server/lib/security.mjs` implements PBKDF2 password hashes, HTTP-only sessions, CSRF tokens, role checks, rate limiting, and security headers.
@@ -30,11 +32,15 @@ Schema migrations:
    - Creates private Storage buckets: `uploads`, `documents`, `avatars`, `workflow-assets`, and `temporary-files`.
    - Adds private Storage object policies.
 
+3. `202605280003_ai_workmate_least_privilege_grants.sql`
+   - Replaces broad private-schema function execution grants with explicit grants for only RLS helper functions.
+   - Leaves trigger/bootstrap helper functions ungranted to frontend-facing roles.
+
 ## Apply Order
 
 Do not apply automatically to production. Recommended flow:
 
-1. Review both migration SQL files.
+1. Review all migration SQL files.
 2. Apply to a Supabase branch or staging project first.
 3. Generate TypeScript types after applying.
 4. Run Supabase advisors again.
@@ -52,4 +58,3 @@ Do not apply automatically to production. Recommended flow:
 ## Non-Destructive Promise
 
 These files are migration artifacts only. They do not drop application tables or modify production data. Storage buckets are created private by default.
-
