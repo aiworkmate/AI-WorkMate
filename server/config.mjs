@@ -30,6 +30,16 @@ export const config = {
   rateLimitMax: intEnv('RATE_LIMIT_MAX', 120),
   maxUploadBytes: intEnv('MAX_UPLOAD_MB', 12) * 1024 * 1024,
   enableRegistration: boolEnv('ENABLE_REGISTRATION', true),
+  persistence: {
+    driver: env.WORKMATE_PERSISTENCE_DRIVER || 'json'
+  },
+  supabase: {
+    url: (env.SUPABASE_URL || '').replace(/\/$/, ''),
+    anonKey: env.SUPABASE_ANON_KEY || '',
+    serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY || '',
+    defaultOrganizationId: env.WORKMATE_DEFAULT_ORGANIZATION_ID || '',
+    defaultWorkspaceId: env.WORKMATE_DEFAULT_WORKSPACE_ID || ''
+  },
   ai: {
     openaiApiKey: env.OPENAI_API_KEY || '',
     openaiBaseUrl: (env.OPENAI_BASE_URL || 'https://api.openai.com').replace(/\/$/, ''),

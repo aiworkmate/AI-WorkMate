@@ -4,7 +4,8 @@ import { absorbMemories, searchMemories } from './memory.mjs';
 import { isMedicalQuery, medicalSystemFrame } from './medical.mjs';
 import { planTools, runToolPlan } from './tools.mjs';
 import { uploadContext } from './uploads.mjs';
-import { clampText, nowISO, sanitizeText, uid } from '../lib/utils.mjs';
+import { getRepositories } from '../repositories/index.mjs';
+import { clampText, nowISO, sanitizeText } from '../lib/utils.mjs';
 
 export async function orchestrateChat(store, { user, message, conversationId, mode = 'general', uploadIds = [], enableLive = true, enableMemory = true }) {
   const started = Date.now();
@@ -25,7 +26,7 @@ export async function orchestrateChat(store, { user, message, conversationId, mo
   }
 
   const savedMemories = route.needsMemory ? await absorbMemories(store, user.id, `${text}\n${answer}`, mode) : [];
-  const conversation = await saveConversationTurn(store, { user, conversationId, text, answer, mode, uploadIds, toolNames: tools.map((item) => item.name) });
+  const conversation = await getRepositories(store).conversations.saveTurn({ user, conversationId, text, answer, mode, uploadIds, toolNames: tools.map((item) => item.name) });
   await recordMetric(store, {
     type: 'chat',
     userId: user.id,
@@ -97,50 +98,4 @@ function buildContext({ memories, tools, uploads, mode, route }) {
     parts.push(`Tool results for final answer:\n${tools.map((item) => `- ${item.name}: ${item.ok ? JSON.stringify(item.result).slice(0, 4000) : `failed: ${item.error}`}`).join('\n')}`);
   }
   return parts.join('\n\n') || 'No additional context was available.';
-}
-
-async function saveConversationTurn(store, { user, conversationId, text, answer, mode, uploadIds, toolNames }) {
-  let conversation = null;
-  await store.update((db) => {
-    conversation = db.conversations.find((item) => item.id === conversationId && item.userId === user.id);
-    if (!conversation) {
-      conversation = {
-        id: uid('conv'),
-        userId: user.id,
-        title: titleFrom(text),
-        mode,
-        createdAt: nowISO(),
-        updatedAt: nowISO()
-      };
-      db.conversations.push(conversation);
-    }
-    conversation.updatedAt = nowISO();
-    conversation.mode = mode;
-    db.messages.push({
-      id: uid('msg'),
-      conversationId: conversation.id,
-      userId: user.id,
-      role: 'user',
-      content: text,
-      uploadIds,
-      toolNames: [],
-      createdAt: nowISO()
-    });
-    db.messages.push({
-      id: uid('msg'),
-      conversationId: conversation.id,
-      userId: user.id,
-      role: 'assistant',
-      content: answer,
-      uploadIds: [],
-      toolNames,
-      createdAt: nowISO()
-    });
-  });
-  return conversation;
-}
-
-function titleFrom(text) {
-  const clean = sanitizeText(text, 80);
-  return clean.length > 58 ? `${clean.slice(0, 58)}...` : clean || 'New conversation';
 }

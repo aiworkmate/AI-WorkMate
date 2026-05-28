@@ -69,6 +69,20 @@ Apply migrations in order only after review:
    - Replaces broad private-schema function execution with explicit grants for RLS helper functions only.
    - Keeps trigger/bootstrap helpers ungranted to frontend-facing roles.
 
+## Repository Layer Scaffold
+
+The Node backend now has the first persistence seam for the migration:
+
+```text
+server/db/supabaseClient.mjs
+server/repositories/index.mjs
+server/repositories/conversations/localConversationRepository.mjs
+server/repositories/conversations/supabaseConversationRepository.mjs
+server/permissions/scope.mjs
+```
+
+Runtime defaults to local JSON storage. Set `WORKMATE_PERSISTENCE_DRIVER=supabase` only after Supabase Auth, organization ids, workspace ids, and RLS have been validated. The Supabase conversation repository requires UUID user, organization, and workspace scope so local `usr_...` development users are not written into tables that reference `auth.users(id)`.
+
 ## Target Schema Decisions
 
 ### Identity And Tenancy
@@ -84,6 +98,7 @@ Apply migrations in order only after review:
 - `conversations` owns chat thread metadata and mode (`general`, `medical`, `workflow`, `admin`).
 - `messages` stores user, assistant, system, and tool messages while preserving final-response output.
 - `message_citations` stores grounded references from tools, web, uploads, or future medical sources.
+- Conversations are the first repository-backed migration target. The orchestrator now calls the conversation repository after `generateFinalResponse()` succeeds, preserving the final-response pipeline.
 
 ### Memory
 

@@ -111,6 +111,14 @@ test('AI WorkMate secure app flow', async () => {
     assert.match(jsonChat.body.response, /brief|file|attached|reviewed/i);
     assert.doesNotMatch(jsonChat.body.response, leakedPattern);
 
+    const conversationList = await request(ctx, '/api/conversations');
+    assert.equal(conversationList.response.status, 200);
+    assert.ok(conversationList.body.conversations.length >= 1);
+
+    const conversationDetail = await request(ctx, `/api/conversations/${conversationList.body.conversations[0].id}`);
+    assert.equal(conversationDetail.response.status, 200);
+    assert.ok(conversationDetail.body.messages.length >= 2);
+
     const warzone = await fetch(`${ctx.base}/api/chat`, {
       method: 'POST',
       headers: { cookie: ctx.cookies, 'x-csrf-token': ctx.csrf, 'content-type': 'application/json' },

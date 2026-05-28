@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { config, publicConfig } from './config.mjs';
 import { createStore } from './lib/storage.mjs';
+import { createRepositories, getRepositories } from './repositories/index.mjs';
 import { audit, summarizeAnalytics } from './modules/analytics.mjs';
 import { createUpload, publicUpload, uploadsForUser } from './modules/uploads.mjs';
 import { clearCookie, cookie, createSession, getSession, hasRole, hashPassword, parseCookies, publicUser, rateLimit, requireCsrf, securityHeaders, verifyPassword } from './lib/security.mjs';
@@ -24,6 +25,7 @@ const mimeTypes = {
 
 export async function createApp() {
   const store = await createStore();
+  store.repositories = createRepositories(store);
 
   async function handler(req, res) {
     securityHeaders(req, res);
@@ -180,21 +182,15 @@ async function chat(req, res, store, user) {
   return json(res, 200, { response: result.response });
 }
 
-function conversations(res, store, user) {
-  const db = store.snapshot();
-  const items = db.conversations
-    .filter((item) => item.userId === user.id)
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-    .map((item) => ({ ...item, messageCount: db.messages.filter((msg) => msg.conversationId === item.id).length }));
+async function conversations(res, store, user) {
+  const items = await getRepositories(store).conversations.listForUser(user.id);
   return json(res, 200, { conversations: items });
 }
 
-function conversationDetail(res, store, user, id) {
-  const db = store.snapshot();
-  const conversation = db.conversations.find((item) => item.id === id && item.userId === user.id);
-  if (!conversation) return json(res, 404, { error: 'Conversation not found.' });
-  const messages = db.messages.filter((item) => item.conversationId === id);
-  return json(res, 200, { conversation, messages });
+async function conversationDetail(res, store, user, id) {
+  const result = await getRepositories(store).conversations.getForUser(user.id, id);
+  if (!result) return json(res, 404, { error: 'Conversation not found.' });
+  return json(res, 200, result);
 }
 
 async function upload(req, res, store, user) {
