@@ -1,0 +1,15 @@
+{
+  "name": "ai-workmate",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AI WorkMate full-stack AI operating system foundation.",
+  "scripts": {
+    "start": "node server/index.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "smoke": "node tests/smoke.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
