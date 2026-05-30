@@ -67,6 +67,7 @@ async function api(req, res, url, store) {
   if (url.pathname === '/api/chat' && req.method === 'POST') return chat(req, res, store, user);
   if (url.pathname === '/api/chat/stream' && req.method === 'POST') return chatStream(req, res, store, user);
   if (url.pathname === '/api/conversations' && req.method === 'GET') return conversations(res, store, user);
+  if (url.pathname === '/api/conversations' && req.method === 'POST') return conversationCreate(req, res, store, user);
   if (url.pathname.startsWith('/api/conversations/') && req.method === 'GET') return conversationDetail(res, store, user, url.pathname.split('/').pop());
   if (url.pathname === '/api/uploads' && req.method === 'GET') return json(res, 200, { uploads: uploadsForUser(store.snapshot(), user.id) });
   if (url.pathname === '/api/uploads' && req.method === 'POST') return upload(req, res, store, user);
@@ -155,6 +156,7 @@ async function chatStream(req, res, store, user) {
     });
     sseEvent(res, 'meta', result.meta);
     for (const chunk of splitForStreaming(result.answer)) {
+      if (res.destroyed || req.destroyed) break;
       sseEvent(res, 'token', { text: chunk });
       await sleep(8);
     }
@@ -178,6 +180,26 @@ async function chat(req, res, store, user) {
     enableMemory: body.enableMemory !== false
   });
   return json(res, 200, { response: result.response });
+}
+
+async function conversationCreate(req, res, store, user) {
+  const body = await readJson(req, 64_000);
+  const title = sanitizeText(body.title || 'New conversation', 80) || 'New conversation';
+  const mode = body.mode === 'medical' ? 'medical' : 'general';
+  let conversation;
+  await store.update((db) => {
+    conversation = {
+      id: uid('conv'),
+      userId: user.id,
+      title,
+      mode,
+      createdAt: nowISO(),
+      updatedAt: nowISO()
+    };
+    db.conversations.push(conversation);
+  });
+  await audit(store, { actorId: user.id, type: 'conversation.create', targetId: conversation.id, detail: { mode } });
+  return json(res, 201, { conversation });
 }
 
 function conversations(res, store, user) {

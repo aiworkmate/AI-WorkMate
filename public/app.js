@@ -1,14 +1,23 @@
+const MAX_RENDERED_MESSAGES = 160;
+
 const state = {
   user: null,
   csrfToken: null,
   config: {},
   mode: 'general',
   conversationId: null,
+  conversationPromise: null,
+  conversations: [],
   uploadIds: [],
   uploads: [],
   streaming: false,
   authMode: 'register',
-  metrics: null
+  metrics: null,
+  streamController: null,
+  streamDraft: '',
+  streamFrame: null,
+  currentAssistant: null,
+  realtimeTimer: null
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -54,7 +63,8 @@ const els = {
   settingsTheme: $('#settingsTheme'),
   themeButton: $('#themeButton'),
   voiceButton: $('#voiceButton'),
-  mobileMenu: $('#mobileMenu')
+  mobileMenu: $('#mobileMenu'),
+  sendButton: $('.send-button')
 };
 
 boot();
@@ -75,6 +85,12 @@ function bindEvents() {
   els.authSwitch.addEventListener('click', toggleAuthMode);
   els.composer.addEventListener('submit', onSend);
   els.promptInput.addEventListener('input', autoSizePrompt);
+  els.promptInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      els.composer.requestSubmit();
+    }
+  });
   els.attachButton.addEventListener('click', () => els.fileInput.click());
   els.uploadViewButton.addEventListener('click', () => els.fileInput.click());
   els.fileInput.addEventListener('change', () => handleFiles([...els.fileInput.files]));
@@ -92,7 +108,7 @@ function bindEvents() {
   els.memoryForm.addEventListener('submit', saveManualMemory);
   els.settingsForm.addEventListener('submit', saveSettings);
   $('#logoutButton').addEventListener('click', logout);
-  $('#newChatButton').addEventListener('click', newChat);
+  $('#newChatButton').addEventListener('click', () => createConversationOptimistic());
   $('#refreshMetrics').addEventListener('click', loadMetrics);
   $('#refreshAdmin').addEventListener('click', loadAdmin);
   $('#refreshMemory').addEventListener('click', loadMemory);
@@ -136,9 +152,11 @@ function applySession(session) {
   refreshStatusChips();
   initialChat();
   Promise.allSettled([loadUploads(), loadConversations(), loadMemory(), loadMetrics()]);
+  startRealtimeRefresh();
 }
 
 function showAuth() {
+  stopRealtimeRefresh();
   els.authView.hidden = false;
   els.app.hidden = true;
 }
@@ -172,60 +190,201 @@ function toggleAuthMode() {
 }
 
 async function logout() {
+  stopActiveStream();
+  stopRealtimeRefresh();
   await api('/api/auth/logout', { method: 'POST', body: '{}' }).catch(() => {});
   state.user = null;
   state.csrfToken = null;
+  state.conversationId = null;
   showAuth();
 }
 
 function initialChat() {
   els.messageList.innerHTML = '';
   addMessage('assistant', 'AI WorkMate is online. Live tools, memory, file understanding, and medical assistive mode are ready.');
+  resetContext('Ready');
 }
 
-function newChat() {
-  state.conversationId = null;
+function createConversationOptimistic(title = 'New conversation') {
+  if (state.conversationPromise && state.conversationId?.startsWith('temp_')) return state.conversationPromise;
+  stopActiveStream();
+  const tempId = `temp_${Date.now()}`;
+  const optimistic = {
+    id: tempId,
+    title,
+    mode: state.mode,
+    messageCount: 0,
+    updatedAt: new Date().toISOString(),
+    optimistic: true
+  };
+  state.conversationId = tempId;
   state.uploadIds = [];
+  state.conversations = [optimistic, ...state.conversations.filter((item) => item.id !== tempId)];
   renderAttachedFiles();
   initialChat();
+  renderConversations();
+  focusPrompt();
+
+  const request = (async () => {
+    try {
+      const result = await api('/api/conversations', {
+        method: 'POST',
+        body: JSON.stringify({ title, mode: state.mode })
+      });
+      state.conversationId = result.conversation.id;
+      state.conversations = [
+        { ...result.conversation, messageCount: 0 },
+        ...state.conversations.filter((item) => item.id !== tempId && item.id !== result.conversation.id)
+      ];
+      renderConversations();
+      focusPrompt();
+      return result.conversation.id;
+    } catch (error) {
+      toast(`New chat will start locally: ${error.message}`);
+      return null;
+    } finally {
+      if (state.conversationPromise === request) state.conversationPromise = null;
+    }
+  })();
+  state.conversationPromise = request;
+  return request;
+}
+
+async function ensureConversation(title) {
+  if (state.conversationId && !state.conversationId.startsWith('temp_')) return state.conversationId;
+  if (state.conversationPromise) return await state.conversationPromise;
+  const created = await createConversationOptimistic(title || 'New conversation');
+  return created || null;
+}
+
+function stopActiveStream() {
+  if (state.streamController) state.streamController.abort();
+  state.streamController = null;
+  state.streaming = false;
+  state.currentAssistant = null;
+  setComposerBusy(false);
 }
 
 async function onSend(event) {
   event.preventDefault();
+  if (state.streaming) {
+    stopActiveStream();
+    toast('Response stopped');
+    return;
+  }
+
   const message = els.promptInput.value.trim();
-  if (!message || state.streaming) return;
+  if (!message) return;
+  const conversationId = await ensureConversation(titleFromMessage(message));
   state.streaming = true;
+  state.streamController = new AbortController();
+  state.streamDraft = '';
   els.promptInput.value = '';
   autoSizePrompt();
   addMessage('user', message);
-  const assistant = addMessage('assistant', '');
+  state.currentAssistant = addMessage('assistant', '');
   setComposerBusy(true);
-  resetContext();
+  resetContext('Thinking');
 
   try {
-    const data = await api('/api/chat', {
-      method: 'POST',
-      body: JSON.stringify({
-        message,
-        conversationId: state.conversationId,
-        mode: state.mode,
-        uploadIds: state.uploadIds,
-        enableLive: els.liveToggle.checked,
-        enableMemory: els.memoryToggle.checked
-      })
+    await streamChat({
+      message,
+      conversationId,
+      mode: state.mode,
+      uploadIds: state.uploadIds,
+      enableLive: els.liveToggle.checked,
+      enableMemory: els.memoryToggle.checked
     });
-    if (!data.response) throw new Error('Missing final AI response.');
-    assistant.content.textContent = data.response;
-    renderContext();
-    scrollMessages();
     await Promise.allSettled([loadConversations(), loadMemory(), loadMetrics()]);
   } catch (error) {
-    assistant.content.textContent = `Request failed: ${error.message}`;
+    if (error.name === 'AbortError') return;
+    state.currentAssistant.content.textContent = `Request failed: ${error.message}`;
     toast(error.message);
   } finally {
+    flushStreamDraft();
     state.streaming = false;
+    state.streamController = null;
+    state.currentAssistant = null;
     setComposerBusy(false);
+    focusPrompt();
   }
+}
+
+async function streamChat(payload) {
+  const response = await fetch('/api/chat/stream', {
+    method: 'POST',
+    credentials: 'same-origin',
+    signal: state.streamController.signal,
+    headers: {
+      'content-type': 'application/json',
+      ...(state.csrfToken ? { 'x-csrf-token': state.csrfToken } : {})
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok || !response.body) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || `Stream failed (${response.status})`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buffer.indexOf('\n\n')) !== -1) {
+      const block = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      handleSseBlock(block);
+    }
+  }
+}
+
+function handleSseBlock(block) {
+  let event = 'message';
+  const data = [];
+  for (const line of block.split('\n')) {
+    if (line.startsWith('event:')) event = line.slice(6).trim();
+    if (line.startsWith('data:')) data.push(line.slice(5).trim());
+  }
+  const payload = data.length ? JSON.parse(data.join('\n')) : {};
+
+  if (event === 'meta') {
+    renderContext(payload);
+    return;
+  }
+  if (event === 'token') {
+    queueAssistantText(payload.text || '');
+    return;
+  }
+  if (event === 'done') {
+    if (payload.conversationId) state.conversationId = payload.conversationId;
+    renderContext({ ...payload, phase: 'Answer ready' });
+    return;
+  }
+  if (event === 'error') {
+    throw new Error(payload.error || 'Stream error');
+  }
+}
+
+function queueAssistantText(text) {
+  state.streamDraft += text;
+  if (!state.streamFrame) {
+    state.streamFrame = requestAnimationFrame(flushStreamDraft);
+  }
+}
+
+function flushStreamDraft() {
+  if (state.streamFrame) cancelAnimationFrame(state.streamFrame);
+  state.streamFrame = null;
+  if (!state.currentAssistant) return;
+  state.currentAssistant.content.textContent = state.streamDraft;
+  if (state.streaming) state.currentAssistant.content.classList.add('streaming-cursor');
+  scrollMessages();
 }
 
 function addMessage(role, content) {
@@ -239,8 +398,23 @@ function addMessage(role, content) {
   bubble.textContent = content;
   item.append(label, bubble);
   els.messageList.append(item);
+  compactMessageDom();
   scrollMessages();
   return { item, content: bubble };
+}
+
+function compactMessageDom() {
+  const messages = Array.from(els.messageList.querySelectorAll('.message'));
+  const overflow = messages.length - MAX_RENDERED_MESSAGES;
+  if (overflow <= 0) return;
+  messages.slice(0, overflow).forEach((item) => item.remove());
+  let marker = els.messageList.querySelector('.virtual-marker');
+  if (!marker) {
+    marker = document.createElement('div');
+    marker.className = 'virtual-marker';
+    els.messageList.prepend(marker);
+  }
+  marker.textContent = `${overflow} older messages are collapsed to keep this chat fast.`;
 }
 
 function scrollMessages() {
@@ -248,14 +422,24 @@ function scrollMessages() {
 }
 
 function setComposerBusy(isBusy) {
-  els.composer.querySelectorAll('button, textarea').forEach((el) => {
-    el.disabled = isBusy;
-  });
+  els.promptInput.disabled = isBusy;
+  els.attachButton.disabled = isBusy;
+  els.voiceButton.disabled = isBusy;
+  els.sendButton.disabled = false;
+  els.sendButton.classList.toggle('is-stop', isBusy);
+  els.sendButton.setAttribute('aria-label', isBusy ? 'Stop response' : 'Send');
+  els.sendButton.innerHTML = isBusy
+    ? '<svg><use href="#i-close"></use></svg>'
+    : '<svg><use href="#i-send"></use></svg>';
 }
 
 function autoSizePrompt() {
   els.promptInput.style.height = 'auto';
   els.promptInput.style.height = `${Math.min(180, Math.max(44, els.promptInput.scrollHeight))}px`;
+}
+
+function focusPrompt() {
+  setTimeout(() => els.promptInput.focus(), 60);
 }
 
 async function handleFiles(files) {
@@ -322,10 +506,17 @@ function renderAttachedFiles() {
 
 async function loadConversations() {
   const data = await api('/api/conversations');
-  els.conversationList.innerHTML = (data.conversations || []).slice(0, 12).map((item) => `
-    <div class="list-item" data-conv="${item.id}">
-      <strong>${escapeHtml(item.title)}</strong>
-      <p>${item.messageCount} messages · ${escapeHtml(item.mode)}</p>
+  const remote = data.conversations || [];
+  const optimistic = state.conversations.filter((item) => item.optimistic && !remote.some((row) => row.id === item.id));
+  state.conversations = [...optimistic, ...remote];
+  renderConversations();
+}
+
+function renderConversations() {
+  els.conversationList.innerHTML = state.conversations.slice(0, 14).map((item) => `
+    <div class="list-item ${item.id === state.conversationId ? 'active-conversation' : ''}" data-conv="${item.id}">
+      <strong>${escapeHtml(item.optimistic ? 'Creating new chat...' : item.title)}</strong>
+      <p>${escapeHtml(item.messageCount ?? 0)} messages / ${escapeHtml(item.mode || state.mode)}</p>
     </div>
   `).join('') || emptyItem('No conversations yet');
   els.conversationList.querySelectorAll('[data-conv]').forEach((item) => {
@@ -334,11 +525,21 @@ async function loadConversations() {
 }
 
 async function loadConversation(id) {
+  if (id.startsWith('temp_')) return;
   const data = await api(`/api/conversations/${id}`);
   state.conversationId = id;
   els.messageList.innerHTML = '';
-  for (const message of data.messages || []) addMessage(message.role, message.content);
+  const messages = data.messages || [];
+  if (messages.length > MAX_RENDERED_MESSAGES) {
+    const marker = document.createElement('div');
+    marker.className = 'virtual-marker';
+    marker.textContent = `${messages.length - MAX_RENDERED_MESSAGES} older messages are collapsed to keep this chat fast.`;
+    els.messageList.append(marker);
+  }
+  for (const message of messages.slice(-MAX_RENDERED_MESSAGES)) addMessage(message.role, message.content);
+  renderConversations();
   openView('chat');
+  focusPrompt();
 }
 
 async function loadMemory() {
@@ -406,7 +607,7 @@ function renderAdmin(summary, audit) {
   els.auditList.innerHTML = audit.map((item) => `
     <div class="list-item">
       <strong>${escapeHtml(item.type)}</strong>
-      <p>${escapeHtml(item.status)} · ${escapeHtml(new Date(item.at).toLocaleString())}</p>
+      <p>${escapeHtml(item.status)} / ${escapeHtml(new Date(item.at).toLocaleString())}</p>
     </div>
   `).join('') || emptyItem('No audit events');
 }
@@ -426,17 +627,21 @@ function renderBars(target, values) {
   });
 }
 
-function renderContext() {
+function renderContext(meta = {}) {
+  els.toolCount.textContent = String(meta.toolCount ?? 0);
+  els.recallCount.textContent = String(meta.memoryCount ?? 0);
+  els.fileCount.textContent = String(meta.uploadCount ?? state.uploadIds.length);
+  els.contextFeed.innerHTML = `
+    <div class="feed-item"><strong>${escapeHtml(meta.phase || 'Answer ready')}</strong><p>Streaming response, bounded context, and memory routing are active.</p></div>
+    <div class="feed-item"><strong>Priority context</strong><p>Project state, pinned memory, recent turns, summaries.</p></div>
+  `;
+}
+
+function resetContext(label = 'Preparing answer') {
   els.toolCount.textContent = '0';
   els.recallCount.textContent = '0';
   els.fileCount.textContent = String(state.uploadIds.length);
-  els.contextFeed.innerHTML = '<div class="feed-item"><strong>Answer ready</strong><p>Only the final assistant message is shown in chat.</p></div>';
-}
-
-function resetContext() {
-  els.toolCount.textContent = '0';
-  els.recallCount.textContent = '0';
-  els.contextFeed.innerHTML = '<div class="feed-item"><strong>Preparing answer</strong><p>The final response will appear in chat.</p></div>';
+  els.contextFeed.innerHTML = `<div class="feed-item live-feed"><strong>${escapeHtml(label)}</strong><p>Memory, files, and tools are being assembled.</p></div>`;
 }
 
 function openView(name) {
@@ -515,6 +720,23 @@ function voiceInput() {
   };
   recognition.onerror = () => toast('Voice input stopped.');
   recognition.start();
+}
+
+function startRealtimeRefresh() {
+  stopRealtimeRefresh();
+  state.realtimeTimer = setInterval(() => {
+    if (!state.user || state.streaming || document.hidden) return;
+    Promise.allSettled([loadConversations(), loadMemory(), loadMetrics()]);
+  }, 12_000);
+}
+
+function stopRealtimeRefresh() {
+  if (state.realtimeTimer) clearInterval(state.realtimeTimer);
+  state.realtimeTimer = null;
+}
+
+function titleFromMessage(message) {
+  return message.length > 58 ? `${message.slice(0, 58)}...` : message || 'New conversation';
 }
 
 function emptyItem(text) {
