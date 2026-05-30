@@ -46,6 +46,7 @@ body {
   color: var(--text);
   font: 15px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   letter-spacing: 0;
+  overflow-x: hidden;
 }
 
 button, input, textarea, select {
@@ -55,6 +56,12 @@ button, input, textarea, select {
 button {
   border: 0;
   cursor: pointer;
+}
+
+button:disabled,
+textarea:disabled {
+  cursor: default;
+  opacity: .62;
 }
 
 svg {
@@ -74,7 +81,7 @@ svg {
 .app-shell {
   display: grid;
   grid-template-columns: 268px minmax(0, 1fr);
-  min-height: 100vh;
+  min-height: 100dvh;
 }
 
 .sidebar {
@@ -260,10 +267,16 @@ svg {
   padding: 0;
 }
 
+.send-button.is-stop {
+  background: var(--surface-3);
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--line));
+}
+
 .view {
   display: none;
   padding: 20px;
-  min-height: calc(100vh - 70px);
+  min-height: calc(100dvh - 70px);
 }
 
 .active-view {
@@ -274,7 +287,7 @@ svg {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 340px;
   gap: 18px;
-  height: calc(100vh - 110px);
+  height: calc(100dvh - 110px);
 }
 
 .conversation-panel,
@@ -301,12 +314,14 @@ svg {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  scroll-behavior: smooth;
 }
 
 .message {
   max-width: 850px;
   display: grid;
   gap: 7px;
+  animation: message-in .18s ease-out;
 }
 
 .message.assistant {
@@ -336,12 +351,38 @@ svg {
   font-weight: 700;
 }
 
+.streaming-cursor::after {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 1em;
+  margin-left: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+  vertical-align: -2px;
+  animation: pulse-cursor .8s infinite;
+}
+
+.virtual-marker {
+  align-self: center;
+  max-width: 520px;
+  padding: 8px 11px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  font-size: 12px;
+  text-align: center;
+}
+
 .composer {
   display: grid;
   gap: 10px;
   padding: 14px;
+  padding-bottom: max(14px, env(safe-area-inset-bottom));
   border-top: 1px solid var(--line);
-  background: var(--surface);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  backdrop-filter: blur(18px);
 }
 
 .composer textarea {
@@ -480,6 +521,21 @@ h3 {
   background: var(--surface-2);
 }
 
+.live-feed {
+  position: relative;
+}
+
+.live-feed::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 7px;
+  border-radius: 99px;
+  background: var(--accent);
+  animation: pulse-cursor .8s infinite;
+}
+
 .feed-item p,
 .list-item p {
   margin: 5px 0 0;
@@ -488,6 +544,11 @@ h3 {
 
 .compact-list .list-item {
   cursor: pointer;
+}
+
+.compact-list .active-conversation {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface-2));
 }
 
 .section-title {
@@ -574,7 +635,7 @@ select {
 }
 
 .auth-view {
-  min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   place-items: center;
   padding: 20px;
@@ -602,7 +663,7 @@ select {
 .toast {
   position: fixed;
   right: 18px;
-  bottom: 18px;
+  bottom: max(18px, env(safe-area-inset-bottom));
   z-index: 30;
   max-width: min(420px, calc(100vw - 36px));
   padding: 12px 14px;
@@ -620,15 +681,25 @@ select {
   display: none !important;
 }
 
+@keyframes message-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse-cursor {
+  0%, 100% { opacity: .28; }
+  50% { opacity: 1; }
+}
+
 @media (max-width: 1060px) {
   .chat-layout {
     grid-template-columns: 1fr;
     height: auto;
-    min-height: calc(100vh - 110px);
+    min-height: calc(100dvh - 110px);
   }
 
   .conversation-panel {
-    min-height: 68vh;
+    min-height: 68dvh;
   }
 }
 
@@ -667,6 +738,7 @@ select {
 
   .view {
     padding: 12px;
+    min-height: calc(100dvh - 70px);
   }
 
   .context-grid,
@@ -680,5 +752,14 @@ select {
 
   .message-list {
     padding: 14px;
+  }
+
+  .message {
+    max-width: 100%;
+  }
+
+  .composer {
+    position: sticky;
+    bottom: 0;
   }
 }
